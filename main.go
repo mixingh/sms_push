@@ -57,6 +57,8 @@ func main() {
 		config.Token = strings.TrimPrefix(lines[1], "token:")
 		fmt.Println("配置文件已找到，配置文件路径为:", ConfigFile, "，数据库路径为:", config.DBPath, "，pushplus的token为:", config.Token)
 	}
+	//创建service服务
+	controller.CreateService()
 
 	for {
 		fmt.Println("尝试获取短信并推送...")
@@ -86,7 +88,7 @@ func main() {
 
 			fmt.Println("短信获取并推送完成！请到pushplus公众号查收")
 		} else {
-			fmt.Println("没有新的短信需要推送")
+			fmt.Println("没有新的短信需要推送。 \n")
 		}
 
 		// 暂停15秒

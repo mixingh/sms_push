@@ -17,4 +17,4 @@
 因为go语言编译的程序对比c语言程序要大的多 于是放弃该方案 改用c语言实现 并且完善多几个推送内容和平台
 
 # C语言版本：
-
+https://github.com/mixingh/sms_push/tree/c%E8%AF%AD%E8%A8%80%E7%89%88%E6%9C%AC

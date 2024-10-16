@@ -8,17 +8,21 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
+#include <openssl/hmac.h>
 #include <curl/curl.h>
 #include <locale.h>
 #include <json-c/json.h>
-#include <sqlite3.h>
 #include <iconv.h>
 #include <regex.h>
+
+
 
 
 #define CONFIG_FILE "/home/root/r200/ipv6_forward.config"
 #define PUSH_TYPE_PREFIX "push_type:"
 #define PUSHPLUS_API "https://www.pushplus.plus/send"
+#define USERNAME_PREFIX "username:"
+#define PASSWORD_PREFIX "password:"
 #define TOKEN_PREFIX "token:"
 #define DINGTALK_PREFIX "dingtalk:"
 #define SECRET_PREFIX "secret:"
@@ -34,6 +38,9 @@
 #define MAX_CONTENT_LENGTH 1024
 #define MAX_IDX_LENGTH 256
 #define TEMP_THRESHOLD 75000 // 50度，单位为0.01度
+#define SMS_THRESHOLD 50 // 定义短信容量阈值，用于自动删除短信
+
+char webs_session[256] = {0}; // 全局变量存储 -webs-session- 值
 
 //日志函数
 void log_with_timestamp(const char *message) {
@@ -47,6 +54,7 @@ void log_with_timestamp(const char *message) {
         FILE *file = fopen("/home/root/r200/forward.log", "w"); // 进行覆写文件
         if (file != NULL) {
             fprintf(file, "%s %s\n", timestamp, message);
+            fprintf(file, "\n"); // 添加换行符
             fclose(file);
         } else {
             printf("无法打开日志文件进行写入\n");
@@ -55,6 +63,7 @@ void log_with_timestamp(const char *message) {
         FILE *file = fopen("/home/root/r200/forward.log", "a");
         if (file != NULL) {
             fprintf(file, "%s %s\n", timestamp, message);
+            fprintf(file, "\n"); // 添加换行符
             fclose(file);
         } else {
             printf("无法打开日志文件进行写入\n");
@@ -63,7 +72,11 @@ void log_with_timestamp(const char *message) {
 }
 
 //用户选择函数
-void get_config_from_user(char *token, char *dingtalk, char *secret, char *push_type, char *wxpush_appToken, char *wxpush_uids, char *bark_key, char *gotify_token, char *gotify_url) {
+void get_config_from_user(char *username,char *password,char *token, char *dingtalk, char *secret, char *push_type, char *wxpush_appToken, char *wxpush_uids, char *bark_key, char *gotify_token, char *gotify_url) {
+	log_with_timestamp("请选择输入用户名:");
+    scanf("%35s", username);
+    log_with_timestamp("请输入密码:");
+    scanf("%35s", password);
     log_with_timestamp("请选择推送方式（1：PushPlus，2：钉钉，3：WxPusher, 4:bark, 5:gotify）:");
     scanf("%1s", push_type);
     if (strcmp(push_type, "1") == 0) {
@@ -93,7 +106,7 @@ void get_config_from_user(char *token, char *dingtalk, char *secret, char *push_
 //实现push推送函数
 void send_pushplus_notification(const char *token, const char *title, const char *content) {
     char command[512];
-    sprintf(command, "curl -s -H \"Content-Type: application/json\" -X POST -d '{\"token\":\"%s\", \"title\":\"%s\", \"content\":\"%s\"}' %s", token, title, content, PUSHPLUS_API);
+   sprintf(command, "curl -X POST http://www.pushplus.plus/send/ -H \"Content-Type: application/json\" -d '{\"token\":\"%s\", \"title\":\"%s\", \"content\":\"%s\"}'", token, title, content);
     
     log_with_timestamp(command); // 记录命令内容
 
@@ -127,16 +140,6 @@ char *base64(const unsigned char *input, int length)
     return buff;
 }
 
-//美化控制台行数 不重要的东西
-size_t write_data(void *buffer, size_t size, size_t nmemb, void *userp) {
-    FILE *log_file = (FILE *)userp;
-    size_t result = fwrite(buffer, size, nmemb, log_file);
-    if (*(char *)((char *)buffer + size * (nmemb - 1)) != '\n') {
-        fputc('\n', log_file); // 强制在响应数据结尾插入一个换行符
-    }
-    printf("%s\n", (char *)buffer);  // 打印到控制台
-    return result;
-}
 
 //实现钉钉机器人推送
 void send_dingtalk_notification(const char *dingtalk, const char *secret, const char *content) {
@@ -153,7 +156,7 @@ void send_dingtalk_notification(const char *dingtalk, const char *secret, const 
     sprintf(post_data, "{\"msgtype\": \"text\", \"text\": {\"content\": \"%s\"}, \"at\": {\"isAtAll\": true}}", content);
 
     //log_with_timestamp(url); // 记录命令内容
-    log_with_timestamp(post_data); // 记录命令内容
+    log_with_timestamp(post_data); // 记录响应内容
 
     CURL *curl = curl_easy_init();
     if(curl) {
@@ -294,189 +297,297 @@ void mask_phone_number(char *text) {
     regfree(&regex);
 }
 
-//当记录>=90时删除数据库已读记录
-void manage_sms_records(const char *db_path) {
-    sqlite3 *db;
-    sqlite3_stmt *stmt;
-    int rc;
-    const char *count_query = "SELECT COUNT(*) FROM DBTABLESMS";
-    const char *delete_query = "DELETE FROM DBTABLESMS WHERE IDX = (SELECT IDX FROM DBTABLESMS WHERE STATE = 1 ORDER BY TIME ASC LIMIT 1)";
 
-    rc = sqlite3_open(db_path, &db);
-    if (rc) {
-        fprintf(stderr, "无法打开数据库: %s\n", sqlite3_errmsg(db));
-        return;
+// HMACMD5加密函数，用于处理用户登录的加密
+void hmac_md5(const char *key, const char *data, unsigned char *result) {
+    unsigned int len = 16;
+    HMAC(EVP_md5(), key, strlen(key), (unsigned char *)data, strlen(data), result, &len);
+}
+size_t writefunc(void *ptr, size_t size, size_t nmemb, char *s) {
+    size_t new_len = strlen(s) + size * nmemb;
+    if (new_len >= 5120) { // 确保新长度不会溢出缓冲区
+        fprintf(stderr, "Response buffer is too small.\n");
+        return 0; // 停止写入，避免溢出
     }
-
-    rc = sqlite3_prepare_v2(db, count_query, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "无法准备SQL语句: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        return;
-    }
-
-    if ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        int count = sqlite3_column_int(stmt, 0);
-        printf("当前数据库中短信数: %d\n", count);
-
-        if (count >= 90) {
-            log_with_timestamp("数据库存储即将溢出，正在删除较前的已读短信");
-            sqlite3_finalize(stmt);
-            rc = sqlite3_prepare_v2(db, delete_query, -1, &stmt, NULL);
-            if (rc != SQLITE_OK) {
-                fprintf(stderr, "无法准备删除语句: %s\n", sqlite3_errmsg(db));
-                sqlite3_close(db);
-                return;
-            }
-            rc = sqlite3_step(stmt);
-            if (rc != SQLITE_DONE) {
-                fprintf(stderr, "无法删除记录: %s\n", sqlite3_errmsg(db));
-            } else {
-                // 删除成功后重新获取记录数
-                sqlite3_finalize(stmt);
-                rc = sqlite3_prepare_v2(db, count_query, -1, &stmt, NULL);
-                if (rc != SQLITE_OK) {
-                    fprintf(stderr, "无法准备SQL语句: %s\n", sqlite3_errmsg(db));
-                    sqlite3_close(db);
-                    return;
-                }
-                if ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-                    int new_count = sqlite3_column_int(stmt, 0);
-                    printf("删除后数据库中短信数: %d\n", new_count);
-                }
-
-                // 删除锁文件并重启进程
-                system("rm /tmp/m_tmp/lock/dbm");
-                system("killall -9 dbm");
-                system("rm /tmp/m_tmp/lock/webserver");
-                system("killall -9 webserver");
-                printf("重启进程成功\n");
-            }
+    strncat(s, ptr, size * nmemb);
+    return size * nmemb;
+}
+size_t header_callback(char *buffer, size_t size, size_t nitems, void *userdata) {
+    char *start = strstr(buffer, "Set-Cookie: ");
+    if (start) {
+        start += strlen("Set-Cookie: ");
+        char *end = strchr(start, '\r');
+        if (!end) {
+            end = strchr(start, '\n');
+        }
+        if (end) {
+            snprintf(webs_session, end - start + 1, "%.*s", (int)(end - start), start);
+            
+            char log_message[512];  // 创建一个缓冲区来格式化字符串
+            snprintf(log_message, sizeof(log_message), "cookie=%s", webs_session);
+            
+            log_with_timestamp(log_message);  // 传递格式化后的字符串
         }
     }
-
-    sqlite3_finalize(stmt);
-    sqlite3_close(db);
+    return nitems * size;
+}
+void to_hex_string(unsigned char *hash, char *hex_string, int len) {
+    for (int i = 0; i < len; i++) sprintf(hex_string + (i * 2), "%02x", hash[i]);
+    hex_string[len * 2] = '\0';
 }
 
-//更新已读状态存储回数据库
-void update_sms_state(const char *db_path, const char *idx) {
-    sqlite3 *db;
-    sqlite3_stmt *stmt;
-    int rc;
-    const char *query = "UPDATE DBTABLESMS SET STATE = 1 WHERE IDX = ?";
-    int retry_count = 0;
-    const int max_retries = 5;
+//登录函数，用于获取ck
+void login(const char *url, const char *key, const char *username, const char *password) {
+    CURL *curl = curl_easy_init();
+    if (curl) {
+        unsigned char hash[16];
+        char hmac_username[33], hmac_password[33], json[200], response[1000] = {0};
+        struct curl_slist *headers = NULL;
+       
+        hmac_md5(key, username, hash);
+        to_hex_string(hash, hmac_username, 16);
+        hmac_md5(key, password, hash);
+        to_hex_string(hash, hmac_password, 16);
 
-    while (retry_count < max_retries) {
-        rc = sqlite3_open(db_path, &db);
-        if (rc) {
-            fprintf(stderr, "无法打开数据库: %s\n", sqlite3_errmsg(db));
-            return;
-        }
-        rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
-        if (rc != SQLITE_OK) {
-            fprintf(stderr, "无法准备SQL语句: %s\n", sqlite3_errmsg(db));
-            sqlite3_close(db);
-            return;
-        }
+        snprintf(json, sizeof(json), "{\"username\": \"%s\", \"password\": \"%s\"}", hmac_username, hmac_password);
 
-        // 绑定参数
-        sqlite3_bind_text(stmt, 1, idx, -1, SQLITE_STATIC);
-        // 执行更新
-        rc = sqlite3_step(stmt);
-        if (rc == SQLITE_DONE) {
-            // 更新成功
-            break;
-        } else if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
-            // 数据库被锁定，重试
-            fprintf(stderr, "无法更新状态: %s. 重试中...\n", sqlite3_errmsg(db));
-            retry_count++;
-            sqlite3_finalize(stmt);
-            sqlite3_close(db);
-            sleep(1); // 等待1秒后重试
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json);
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+
+        CURLcode res = curl_easy_perform(curl);
+        if (res == CURLE_OK && strstr(response, "\"retcode\":0")) {
+            log_with_timestamp("Login successful\n");
         } else {
-            // 其他错误
-            fprintf(stderr, "无法更新状态: %s\n", sqlite3_errmsg(db));
-            break;
+            log_with_timestamp("Login failed\n");
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
         }
-    }
 
-    // 释放资源
-    sqlite3_finalize(stmt);
-    sqlite3_close(db);
-}
-
-
-//从数据库查询未读短信
-void get_sms_content(char *content, char *idx, const char *db_path, const char *push_type, const char *token, const char *dingtalk, const char *secret, const char *wxpush_appToken, const char *wxpush_uids, const char *bark_key, const char *gotify_url, const char *gotify_token) {
-    manage_sms_records(db_path);
-    sqlite3 *db;
-    sqlite3_stmt *stmt;
-    int rc;
-    char query[MAX_QUERY_LENGTH] = "SELECT * FROM DBTABLESMS WHERE STATE = 0 ORDER BY TIME DESC LIMIT 1";
-    rc = sqlite3_open(db_path, &db);
-    if (rc) {
-        fprintf(stderr, "无法打开数据库: %s\n", sqlite3_errmsg(db));
-        return;
-    }
-    rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "无法准备SQL语句: %s\n", sqlite3_errmsg(db));
-        sqlite3_close(db);
-        return;
-    }
-    if ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        const char *col_idx = (const char *)sqlite3_column_text(stmt, 0);
-        const char *phone = (const char *)sqlite3_column_text(stmt, 1);
-        const char *timeStr = (const char *)sqlite3_column_text(stmt, 4);
-        const char *sms_content_text = (const char *)sqlite3_column_text(stmt, 5);
-        char formatted_time[80];
-        if (col_idx && phone && timeStr && sms_content_text) {
-            time_t rawtime = (time_t)atol(timeStr);
-            struct tm *timeinfo = localtime(&rawtime);
-            strftime(formatted_time, sizeof(formatted_time), "%Y-%m-%d %H:%M:%S", timeinfo);
-
-            char masked_sms_content[MAX_CONTENT_LENGTH];
-            strncpy(masked_sms_content, sms_content_text, MAX_CONTENT_LENGTH);
-            mask_phone_number(masked_sms_content);
-
-            snprintf(content, MAX_CONTENT_LENGTH, "发件人: %s\n时间: %s\n*********************************\n短信内容: \n%s\n", phone, formatted_time, masked_sms_content);
-            strncpy(idx, col_idx, MAX_IDX_LENGTH);
-
-            if (strlen(idx) > 0) {
-                char message[256];
-                snprintf(message, sizeof(message), "新短信:\n%s", content);
-                log_with_timestamp(message);
-
-                if (strcmp(push_type, "1") == 0) {
-                    send_pushplus_notification(token, "短信通知", content);
-                } else if (strcmp(push_type, "2") == 0) {
-                    send_dingtalk_notification(dingtalk, secret, content);
-                } else if (strcmp(push_type, "3") == 0) {
-                    send_wxpush_notification(wxpush_appToken, wxpush_uids, "短信通知", content);
-                } else if (strcmp(push_type, "4") == 0) {
-                    log_with_timestamp("正在进行Bark推送...");
-                    send_bark_notification(bark_key, "短信通知", content);
-                } else if (strcmp(push_type, "5") == 0) {
-                    log_with_timestamp("正在进行gotify推送...");
-                    send_gotify_notification(gotify_url, gotify_token, "短信通知", content);
-                }
-
-                sqlite3_finalize(stmt);
-                sqlite3_close(db);
-                update_sms_state(db_path, idx);
-                return;
-            }
-        } else {
-            printf("没有新的短信需要推送。\n");
-        }
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
     } else {
-        printf("没有新的短信需要推送。\n");
+        printf("CURL initialization failed!\n");
     }
-    sqlite3_finalize(stmt);
-    sqlite3_close(db);
+    curl_global_cleanup();
 }
+
+// 设置未读短信为已读
+void read_sms_info(const char *sms_id, int smsbox) {
+    CURL *curl = curl_easy_init();
+    if (curl) {
+        const char *url = "http://localhost/action/sms_read_sms_info";
+        char post_data[256];
+        snprintf(post_data, sizeof(post_data), "{\"index\": \"%s\", \"smsbox\": %d}", sms_id, smsbox);
+
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        // 添加必要的cookie header
+        char cookie_header[512];
+        snprintf(cookie_header, sizeof(cookie_header), "Cookie: %s", webs_session);
+        headers = curl_slist_append(headers, cookie_header);
+
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
+
+        char response[5120] = {0};
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+
+        // 打印请求数据
+        //printf("Request: %s\n", post_data);
+
+        CURLcode res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            fprintf(stderr, "Failed to read SMS info: %s\n", curl_easy_strerror(res));
+        } else {
+            // 打印响应数据
+            //printf("Response: %s\n", response);
+
+            // 解析响应JSON
+            struct json_object *parsed_json = json_tokener_parse(response);
+            struct json_object *retcode_obj;
+            json_object_object_get_ex(parsed_json, "retcode", &retcode_obj);
+            int retcode = json_object_get_int(retcode_obj);
+
+            if (retcode == 0) {
+                printf("\n短信已设置成已读\n");
+            } else {
+                printf("Failed to set SMS as read\n");
+            }
+
+            json_object_put(parsed_json); // 释放JSON对象
+        }
+
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+    }
+}
+
+//自动删除短信函数
+void delete_sms(const char *sms_id, int smsbox) {
+    CURL *curl = curl_easy_init();
+    if (curl) {
+        const char *url = "http://localhost/action/sms_del_sms_info";
+        char post_data[256];
+        snprintf(post_data, sizeof(post_data), "{\"index\": [\"%s\"], \"smsbox\": %d}", sms_id, smsbox);
+
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        // 添加必要的cookie header
+        char cookie_header[512];
+        snprintf(cookie_header, sizeof(cookie_header), "Cookie: %s", webs_session);
+        headers = curl_slist_append(headers, cookie_header);
+
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
+
+        char response[5120] = {0};
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+
+        // 打印请求数据
+        //printf("Request: %s\n", post_data);
+
+        CURLcode res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            fprintf(stderr, "Failed to delete SMS: %s\n", curl_easy_strerror(res));
+        } else {
+            // 打印响应数据
+            //printf("Response: %s\n", response);
+
+            // 解析响应JSON
+            struct json_object *parsed_json = json_tokener_parse(response);
+            struct json_object *retcode_obj;
+            json_object_object_get_ex(parsed_json, "retcode", &retcode_obj);
+            int retcode = json_object_get_int(retcode_obj);
+
+            if (retcode == 0) {
+                printf("短信已删除\n");
+            } else {
+                printf("Failed to delete SMS\n");
+            }
+
+            json_object_put(parsed_json); // 释放JSON对象
+        }
+
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+    }
+}
+
+// 获取短信列表并推送未读短信的函数
+void get_sms_list(const char *push_type, const char *token, const char *dingtalk, const char *secret, const char *wxpush_appToken, const char *wxpush_uids, const char *bark_key, const char *gotify_url, const char *gotify_token, int smsbox) {
+    CURL *curl = curl_easy_init();
+    if (curl) {
+        const char *url = "http://localhost/action/sms_get_sms_list";
+        const char *json_body = "{\"start\": 1, \"end\": 100, \"smsbox\": 1}";
+        char response[5120] = {0}; // 增加缓冲区大小
+        
+        struct curl_slist *headers = NULL;
+        char cookie_header[512];
+        snprintf(cookie_header, sizeof(cookie_header), "Cookie: %s", webs_session);
+
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_body);
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+        headers = curl_slist_append(headers, cookie_header);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writefunc);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+
+        CURLcode res = curl_easy_perform(curl);
+        if (res == CURLE_OK) {
+            // 解析响应并提取信息
+            struct json_object *parsed_json, *data, *smsList, *sms;
+            parsed_json = json_tokener_parse(response);
+            json_object_object_get_ex(parsed_json, "data", &data);
+            json_object_object_get_ex(data, "smsList", &smsList);
+            int totalCount = json_object_get_int(json_object_object_get(data, "totalCount"));
+
+            if (totalCount >= SMS_THRESHOLD) {
+                // 找到时间最早的一条短信
+                time_t earliest_time = LONG_MAX;
+                const char *earliest_sms_id = NULL;
+                
+                for (int i = 0; i < json_object_array_length(smsList); i++) {
+                    sms = json_object_array_get_idx(smsList, i);
+                    time_t sms_time = (time_t)json_object_get_int(json_object_object_get(sms, "datetime"));
+                    if (sms_time < earliest_time) {
+                        earliest_time = sms_time;
+                        earliest_sms_id = json_object_get_string(json_object_object_get(sms, "index"));
+                    }
+                }
+
+                if (earliest_sms_id) {
+                    delete_sms(earliest_sms_id, smsbox); // 删除最早的一条短信
+                }
+            }
+
+            for (int i = 0; i < json_object_array_length(smsList); i++) {
+                sms = json_object_array_get_idx(smsList, i);
+
+                int isread = json_object_get_int(json_object_object_get(sms, "isread"));
+                if (isread == 0) { // 仅处理未读短信
+                    const char *phone = json_object_get_string(json_object_object_get(sms, "phone"));//获取短信号码
+                    const char *content = json_object_get_string(json_object_object_get(sms, "content"));//获取短信内容
+                    const char *sms_id = json_object_get_string(json_object_object_get(sms, "index")); // 获取短信ID
+
+                    // 格式化日期时间
+                    char datetime_str[100];
+                    time_t dt = (time_t)json_object_get_int(json_object_object_get(sms, "datetime"));//获取短信时间戳
+                    struct tm *tm_info = localtime(&dt);
+                    strftime(datetime_str, sizeof(datetime_str), "%Y-%m-%d %H:%M:%S", tm_info);
+
+                    // 格式化电话
+                    char formatted_phone[256];
+                    strcpy(formatted_phone, phone);
+                    mask_phone_number(formatted_phone);
+
+                    // 输出信息
+                    //printf("\n发件人: %s\n时间: %s\n*********************************\n短信内容: \n%s\n\n", formatted_phone, datetime_str, content);
+
+                    // 推送未读短信
+                    char push_content[5120];
+                    snprintf(push_content, sizeof(push_content), "\n新短信\n发件人: %s\n时间: %s\n*********************************\n短信内容: \n%s\n", formatted_phone, datetime_str, content);
+                    log_with_timestamp(push_content);
+
+                    if (strcmp(push_type, "1") == 0) {
+                        send_pushplus_notification(token, "短信通知", push_content);
+                    } else if (strcmp(push_type, "2") == 0) {
+                        send_dingtalk_notification(dingtalk, secret, push_content);
+                    } else if (strcmp(push_type, "3") == 0) {
+                        send_wxpush_notification(wxpush_appToken, wxpush_uids, "短信通知", push_content);
+                    } else if (strcmp(push_type, "4") == 0) {
+                        log_with_timestamp("正在进行Bark推送...");
+                        send_bark_notification(bark_key, "短信通知", push_content);
+                    } else if (strcmp(push_type, "5") == 0) {
+                        log_with_timestamp("正在进行gotify推送...");
+                        send_gotify_notification(gotify_url, gotify_token, "短信通知", push_content);
+                    }
+
+                    // 模拟点击查看短信
+                    read_sms_info(sms_id, smsbox); // 调用模拟查看短信的函数
+                }
+            }
+
+            json_object_put(parsed_json);
+        } else {
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        }
+
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+    }
+}
+
 
 // 获取CPE温度
 void check_temperature(const char *token, const char *dingtalk, const char *secret, const char *push_type, const char *wxpush_appToken, const char *wxpush_uids, const char *bark_key, const char *gotify_url, const char *gotify_token) {
@@ -499,10 +610,14 @@ void check_temperature(const char *token, const char *dingtalk, const char *secr
     json_object_object_get_ex(data, "temp1", &temp1);
 
     int temperature1 = json_object_get_int(temp1);
+    float temp_in_celsius = temperature1 / 1000.0;
+    
+    char log_message[256];
+    snprintf(log_message, sizeof(log_message), "\n您的CPE当前温度为: %.1f度\n", temp_in_celsius);
+    log_with_timestamp(log_message); // 记录当前温度
 
     if (temperature1 > TEMP_THRESHOLD) {
         char content[256];
-        float temp_in_celsius = temperature1 / 1000.0;
         sprintf(content, "您的CPE当前温度为: %.1f度, 要爆炸啦! \n此温度为芯片内部温度，非主板和设备温度，设备实际温度会低于此温度！\n作者QQ:2353223717", temp_in_celsius);
         log_with_timestamp(content); // 记录警告内容
 
@@ -521,8 +636,6 @@ void check_temperature(const char *token, const char *dingtalk, const char *secr
 
     json_object_put(parsed_json);
 }
-
-
 
 //获取系统运行时间并处理格式
 void get_system_uptime(int *uptime_days, int *uptime_hours, int *uptime_minutes, int *uptime_seconds) {
@@ -646,6 +759,8 @@ void create_and_start_service() {
 int main() {
     FILE *file;
     char line[256];
+    char username[MAX_TOKEN_LENGTH + 1] = {0};
+    char password[MAX_TOKEN_LENGTH + 1] = {0};
     char token[MAX_TOKEN_LENGTH + 1] = {0};
     char dingtalk[MAX_TOKEN_LENGTH + 1] = {0};
     char secret[MAX_TOKEN_LENGTH + 1] = {0};
@@ -656,6 +771,8 @@ int main() {
     char gotify_token[MAX_TOKEN_LENGTH + 1] = {0};
     char gotify_url[MAX_TOKEN_LENGTH + 1] = {0};
     char ipv6[MAX_IPv6_LENGTH + 1] = {0};
+    int username_found = 0;
+    int password_found = 0; 
     int token_found = 0;
     int dingtalk_found = 0;
     int secret_found = 0;
@@ -668,28 +785,34 @@ int main() {
     char content[MAX_CONTENT_LENGTH] = {0};
     char idx[MAX_IDX_LENGTH] = {0};
     int temperature_counter = 0;
+    int login_counter = 0;
+    int g_smsType = 1; // 1是收件箱类型
+   
     
     
    
    // 检查数据库文件位置
-const char *db_path = NULL;
-if (access("/m_data/usr/dbm/database.db", F_OK) == 0) {
-    db_path = "/m_data/usr/dbm/database.db";
-} else if (access("/m_data/usr/dbm/database.db", F_OK) == 0) { // 新增的位置
-    db_path = "/m_data/usr/dbm/database.db";
-} else if (access("/usrdata/usr/dbm/database.db", F_OK) == 0) {
-    db_path = "/usrdata/usr/dbm/database.db";
-} else {
-    fprintf(stderr, "无法找到数据库文件\n");
-    return 1;
-}
-
+   const char *db_path =NULL;
+    if (access("/m_data/usr/dbm/database.db", F_OK) == 0) {
+        db_path = "/m_data/usr/dbm/database.db";
+    } else if (access("/usrdata/usr/dbm/database.db", F_OK) == 0) {
+        db_path = "/usrdata/usr/dbm/database.db";
+    } else {
+        fprintf(stderr, "无法找到数据库文件\n");
+        return 1;
+    }
     
     
     file = fopen(CONFIG_FILE, "r");
     if (file != NULL) {
         while (fgets(line, sizeof(line), file)) {
-            if (strncmp(line, TOKEN_PREFIX, strlen(TOKEN_PREFIX)) == 0) {
+        	  if (strncmp(line, USERNAME_PREFIX, strlen(USERNAME_PREFIX)) == 0) {
+                sscanf(line, "username:%s", username);
+                username_found = 1;
+            } else if (strncmp(line, PASSWORD_PREFIX, strlen(PASSWORD_PREFIX)) == 0) {
+                sscanf(line, "password:%s", password);
+                password_found = 1;
+            } else if (strncmp(line, TOKEN_PREFIX, strlen(TOKEN_PREFIX)) == 0) {
                 sscanf(line, "token:%s", token);
                 token_found = 1;
             } else if (strncmp(line, DINGTALK_PREFIX, strlen(DINGTALK_PREFIX)) == 0) {
@@ -720,10 +843,28 @@ if (access("/m_data/usr/dbm/database.db", F_OK) == 0) {
         }
         fclose(file);
     } 
+    
     //检查是否存在配置文件
     if (push_type_found) {
     		log_with_timestamp("检测到配置文件...");
-        if (strcmp(push_type, "1") == 0 || strcmp(push_type, "2") == 0 || strcmp(push_type, "5") == 0) {
+                if (!username_found || !password_found ) {
+                	log_with_timestamp("未检测到用户配置...");
+                    log_with_timestamp("请在下面输入用户名:\n");
+                    scanf("%35s", username);
+                    log_with_timestamp("请输入密码:\n");
+        			 scanf("%32s", password);
+                    file = fopen(CONFIG_FILE, "a");
+                    if (file == NULL) {
+                        perror("无法打开配置文件进行写入");
+                        return 1;
+                    }
+                    fprintf(file, "#用户配置\n");
+                    fprintf(file, "%s%s\n", USERNAME_PREFIX, username);
+                    fprintf(file, "%s%s\n", PASSWORD_PREFIX,  password);
+                    fclose(file);
+                    log_with_timestamp("用户配置已写入配置文件");
+                }
+        if (strcmp(push_type, "1") == 0 || strcmp(push_type, "2") == 0 || strcmp(push_type, "3") == 0 || strcmp(push_type, "4") == 0 || strcmp(push_type, "5") == 0) {
             if (strcmp(push_type, "1") == 0) {
                 log_with_timestamp("检测到已选择 PushPlus 推送...");
                 if (!token_found) {
@@ -815,24 +956,32 @@ if (access("/m_data/usr/dbm/database.db", F_OK) == 0) {
                 }
             }
         } 
-    } else if (!push_type_found ) {
+    }
+      else if (!push_type_found ) {
     log_with_timestamp("未检测到配置文件，需进行设置...");
     // 读取用户的推送方式选择
-    get_config_from_user(token, dingtalk, secret, push_type, wxpush_appToken, wxpush_uids,bark_key, gotify_token, gotify_url);
+    get_config_from_user(username, password, token, dingtalk, secret, push_type, wxpush_appToken, wxpush_uids,bark_key, gotify_token, gotify_url);
     // 写入配置文件
     file = fopen(CONFIG_FILE, "w");
     if (file == NULL) {
         perror("无法打开配置文件进行写入");
         return 1;
+    } 
+    if (!username_found && !password_found) {
+        fprintf(file, "#用户配置\n");
+        fprintf(file, "%s%s\n", USERNAME_PREFIX, username);
+        fprintf(file, "%s%s\n", PASSWORD_PREFIX, password);
     }
     if (!push_type_found) {
     	   fprintf(file, "#推送方式配置：1：pushplus；2：钉钉机器人；3：wxpush; 4:bark; 5: gotify\n");
         fprintf(file, "%s%s\n", PUSH_TYPE_PREFIX, push_type);
     }
+   
     if (!token_found && strcmp(push_type, "1") == 0) {
         fprintf(file, "#pushplus配置\n");
         fprintf(file, "%s%s\n", TOKEN_PREFIX, token);
     }
+    
     if (!dingtalk_found && strcmp(push_type, "2") == 0) {
         fprintf(file, "#钉钉机器人配置\n");
         fprintf(file, "%s%s\n", DINGTALK_PREFIX, dingtalk);
@@ -855,6 +1004,8 @@ if (access("/m_data/usr/dbm/database.db", F_OK) == 0) {
     fclose(file);
     log_with_timestamp("配置信息已写入 " CONFIG_FILE);
 }  
+    
+    
     // 测试推送
     if (strcmp(push_type, "1") == 0) {
         log_with_timestamp("正在进行测试PushPlus推送...");
@@ -879,25 +1030,39 @@ if (access("/m_data/usr/dbm/database.db", F_OK) == 0) {
     // 首次获取系统运行时间
     int notified = 0;  // 标志变量，表示是否已推送过通知
 
+    // 首次立即调用 login 函数
+    printf("Initial login...\n");
+    login("http://localhost/goform/login", "0123456789", username, password);
+
     // 添加自启动服务
     create_and_start_service();
 
 // 轮询的实现
 while (1) {
     sleep(12);
+    
+        // 登录获取cookie，每5分钟获取一次
+    login_counter += 12;
+        if (login_counter >= 300) { // 每 5 分钟调用一次 login
+            printf("Attempting login...\n");
+            login("http://localhost/goform/login", "0123456789", username, password);
+            login_counter = 0;
+        }
+        
     // 短信    
-    get_sms_content(content, idx, db_path, push_type, token, dingtalk, secret, wxpush_appToken, wxpush_uids,bark_key, gotify_url, gotify_token);
+   get_sms_list(push_type, token, dingtalk, secret, wxpush_appToken, wxpush_uids,bark_key, gotify_url, gotify_token, g_smsType);
     //ipv6
     get_ipv6_address(ipv6, 0, token, dingtalk, secret, push_type, wxpush_appToken, wxpush_uids, bark_key, gotify_url, gotify_token);
     //重启
     send_system_uptime_notification(token, dingtalk, secret, push_type, wxpush_appToken, wxpush_uids, &notified,bark_key, gotify_url, gotify_token);
+    
  // 温度，每分钟查询一次
-        if (temperature_counter >= 5) {
+    temperature_counter += 12;
+        if (temperature_counter >= 120) { // 每 1 分钟调用一次 check_temperature
+            //printf("温度...\n");
             check_temperature(token, dingtalk, secret, push_type, wxpush_appToken, wxpush_uids, bark_key, gotify_url, gotify_token);
             temperature_counter = 0;
-        } else {
-            temperature_counter++;
         }
-    }
+}
     return 0;
 }

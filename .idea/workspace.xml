@@ -4,11 +4,15 @@
     <option name="autoReloadType" value="ALL" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="b4bc2fa3-d2d1-45b3-baaa-18ee0fae6e6e" name="更改" comment="第一个版本，基本上完成功能">
-      <change beforePath="$PROJECT_DIR$/.idea/sms_pushplus.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/sms_pushplus.iml" afterDir="false" />
+    <list default="true" id="b4bc2fa3-d2d1-45b3-baaa-18ee0fae6e6e" name="更改" comment="添加service服务,实现开机自启，常驻后台">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/controller/pushplus.go" beforeDir="false" afterPath="$PROJECT_DIR$/controller/pushplus.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/controller/service.go" beforeDir="false" afterPath="$PROJECT_DIR$/controller/service.go" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/go.mod" beforeDir="false" afterPath="$PROJECT_DIR$/go.mod" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/go.sum" beforeDir="false" afterPath="$PROJECT_DIR$/go.sum" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.go" beforeDir="false" afterPath="$PROJECT_DIR$/main.go" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/sql" beforeDir="false" afterPath="$PROJECT_DIR$/sql" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/sql" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/sqlite3/database.go" beforeDir="false" afterPath="$PROJECT_DIR$/sqlite3/database.go" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -25,9 +29,13 @@
   <component name="GOROOT" url="file://C:/Program Files/Go" />
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="RESET_MODE" value="MIXED" />
   </component>
   <component name="MarkdownSettingsMigration">
     <option name="stateVersion" value="1" />
+  </component>
+  <component name="ProblemsViewState">
+    <option name="selectedTabId" value="CurrentFile" />
   </component>
   <component name="ProjectId" id="2gJRiEtExzYpgnYMl8eTZesqZab" />
   <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
@@ -45,13 +53,22 @@
     &quot;WebServerToolWindowFactoryState&quot;: &quot;false&quot;,
     &quot;git-widget-placeholder&quot;: &quot;master&quot;,
     &quot;go.import.settings.migrated&quot;: &quot;true&quot;,
-    &quot;last_opened_file_path&quot;: &quot;E:/Goland/sms_pushplus&quot;,
+    &quot;last_opened_file_path&quot;: &quot;E:/Goland/forword&quot;,
     &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
     &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;run.code.analysis.last.selected.profile&quot;: &quot;pProject Default&quot;,
     &quot;settings.editor.selected.configurable&quot;: &quot;go&quot;
   }
 }</component>
   <component name="RunManager">
+    <configuration default="true" type="GoApplicationRunConfiguration" factoryName="Go Application">
+      <module name="sms_pushplus" />
+      <working_directory value="$PROJECT_DIR$" />
+      <kind value="FILE" />
+      <directory value="$PROJECT_DIR$" />
+      <filePath value="$PROJECT_DIR$" />
+      <method v="2" />
+    </configuration>
     <configuration name="go build sms_pushplus" type="GoApplicationRunConfiguration" factoryName="Go Application" temporary="true" nameIsGenerated="true">
       <module name="sms_pushplus" />
       <working_directory value="$PROJECT_DIR$" />
@@ -59,6 +76,15 @@
       <package value="sms_pushplus" />
       <directory value="$PROJECT_DIR$" />
       <filePath value="$PROJECT_DIR$/main.go" />
+      <method v="2" />
+    </configuration>
+    <configuration default="true" type="GoTestRunConfiguration" factoryName="Go Test">
+      <module name="sms_pushplus" />
+      <working_directory value="$PROJECT_DIR$" />
+      <kind value="DIRECTORY" />
+      <directory value="$PROJECT_DIR$" />
+      <filePath value="$PROJECT_DIR$" />
+      <framework value="gotest" />
       <method v="2" />
     </configuration>
     <recent_temporary>
@@ -96,7 +122,8 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="第一个版本，基本上完成功能" />
-    <option name="LAST_COMMIT_MESSAGE" value="第一个版本，基本上完成功能" />
+    <MESSAGE value="添加service服务,实现开机自启，常驻后台" />
+    <option name="LAST_COMMIT_MESSAGE" value="添加service服务,实现开机自启，常驻后台" />
   </component>
   <component name="VgoProject">
     <settings-migrated>true</settings-migrated>

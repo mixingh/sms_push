@@ -10,7 +10,7 @@
 
 # 使用方法：
 
-将forward二进制程序上传至cpe内/usr/bin目录 然后输入forward运行程序 根据提示输入相关参数
+将sql二进制程序上传至cpe内/usr/bin目录 然后输入sql运行程序 根据提示输入相关参数
 
 # 2024-10-16更新：
 
@@ -18,3 +18,5 @@
 
 # C语言版本：
 https://github.com/mixingh/sms_push/tree/c%E8%AF%AD%E8%A8%80%E7%89%88%E6%9C%AC
+# web接口版本：
+[https://github.com/mixingh/sms_push/tree/c%E8%AF%AD%E8%A8%80%E7%89%88%E6%9C%AC](https://github.com/mixingh/sms_push/tree/web%E6%8E%A5%E5%8F%A3%E7%89%88%E6%9C%AC)
